@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+venv/
+env/
+*.egg-info/
+
+# Windows
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editores y IDEs (VSCode, JetBrains, Vim)
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# directorios ya archivos generales
+*.egg-info/
+.env
+
+audio_transcription/inputs/audios/*
+!audio_transcription/inputs/audios/.gitkeep
+
+audio_transcription/outputs/*
+!audio_transcription/outputs/.gitkeep
+
+audio_transcription/logs/*
+!audio_transcription/logs/.gitkeep

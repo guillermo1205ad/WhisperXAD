@@ -1,0 +1,25 @@
+[project]
+name = "nuestramemoria-dev"
+version = "0.1.0"
+description = "Desarrollos para procesamiento multimodal de datos en el proyecto NuestraMemorIA" 
+requires-python = ">=3.10"
+
+dependencies = [
+    "ctranslate2",   
+    "faster-whisper",
+    "librosa",
+    "numpy",   
+    "psutil",
+    "pyannote.audio",
+    "whisperx",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",     # linting y formateo
+    "pytest",   # correr tests
+]
+
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
