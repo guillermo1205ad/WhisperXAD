@@ -35,3 +35,6 @@ audio_transcription/outputs/*
 
 audio_transcription/logs/*
 !audio_transcription/logs/.gitkeep
+
+# No versionar audios de entrada de WhisperX
+audio_transcription/inputs/audios/

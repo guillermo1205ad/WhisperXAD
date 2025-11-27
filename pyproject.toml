@@ -5,12 +5,13 @@ description = "Desarrollos para procesamiento multimodal de datos en el proyecto
 requires-python = ">=3.10"
 
 dependencies = [
-    "ctranslate2",   
+    "ctranslate2",
     "faster-whisper",
     "librosa",
-    "numpy",   
+    "numpy",
     "psutil",
     "pyannote.audio",
+    "python-dotenv>=1.2.1",
     "whisperx",
 ]
 

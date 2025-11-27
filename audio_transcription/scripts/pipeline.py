@@ -1,300 +1,339 @@
-import whisperx
-import torch
-import gc
 import os
+import gc
 import json
-import nltk
 import logging
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
+
+import torch
 import psutil
+import nltk
+import whisperx
 from dotenv import load_dotenv
 from whisperx.diarize import DiarizationPipeline, assign_word_speakers
-from typing import List, Dict, Any, Optional
-from dataclasses import dataclass, field
-
-load_dotenv(override=True)
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------
+# Carga de .env desde la raíz del proyecto
+# ---------------------------------------------------------------------
+THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(os.path.dirname(THIS_DIR))
+ENV_PATH = os.path.join(PROJECT_ROOT, ".env")
+
+if os.path.exists(ENV_PATH):
+    load_dotenv(ENV_PATH)
+    logger.info(f"Cargado .env desde {ENV_PATH}")
+else:
+    load_dotenv()
+    logger.warning(
+        f"No se encontró .env en {ENV_PATH}. "
+        "Se intentará cargar variables de entorno globales."
+    )
+
+# ---------------------------------------------------------------------
+# Configuración del pipeline
+# ---------------------------------------------------------------------
+
 
 @dataclass
 class PipelineConfig:
     """
-    Configuración para el WhisperXPipeline, agrupando parámetros.
-    Esta clase almacena todas las configuraciones de hardware y de tarea
-    necesarias para inicializar y ejecutar el pipeline.
+    Configuración para el WhisperXPipeline.
     """
 
-    language_code: str = "es"
-    asr_model_name: str = "large-v3"
-    hf_token: Optional[str] = field(default_factory=lambda: os.environ.get("HUGGING_FACE_TOKEN"))
-    
-    batch_size: int = 8 # numero de segmentos de audio que se procesan en paralelo en la CPU/GPU
-    compute_type: str = "int8"
-    device_asr: Optional[str] = None
-    device_torch: Optional[str] = None
+    language: str = "es"
+    asr_model: str = "large-v3"
+    batch_size: int = 16
+    compute_type: Optional[str] = None  # int8, float16, float32, etc.
+
+    device_asr: Optional[str] = None    # "cuda" o "cpu"
+    device_torch: Optional[str] = None  # para alineación
+
+    hf_token: Optional[str] = field(
+        default_factory=lambda: os.environ.get("HUGGING_FACE_TOKEN")
+    )
 
     def __post_init__(self):
-        """
-        Determina automáticamente los dispositivos de hardware si no se proporcionan.
-        """
+        # Detectar dispositivos
         if self.device_asr is None or self.device_torch is None:
-            if torch.backends.mps.is_available():
-                # Forzamos ASR a CPU por compatibilidad de whisperx/pyannote en MPS
-                self.device_asr = "cpu"
-                self.device_torch = "mps"
-                logger.info(f"MPS detectado. Usando '{self.device_asr}' para ASR y '{self.device_torch}' para Alignment/Diarization.")
+            if torch.cuda.is_available():
+                # Podemos usar GPU para ASR y alignment
+                self.device_asr = "cuda"
+                self.device_torch = "cuda"
+                logger.info(
+                    "CUDA detectado. ASR y Alignment usarán GPU. "
+                    "La diarización se forzará a CPU para evitar problemas con cuDNN."
+                )
             else:
-                # Fallback a CPU si no hay GPU de Apple
                 self.device_asr = "cpu"
                 self.device_torch = "cpu"
-                logger.warning("MPS (GPU) no está disponible, usando CPU. La transcripción será MUY lenta.")
-        
+                logger.warning(
+                    "CUDA no disponible. Todo el pipeline se ejecutará en CPU "
+                    "(más lento, pero estable)."
+                )
+
+        # Si no hay compute_type, elegimos uno razonable por defecto
+        if self.compute_type is None:
+            if self.device_asr == "cuda":
+                self.compute_type = "float16"
+            else:
+                self.compute_type = "int8"
+            logger.info(f"compute_type no especificado. Usando: {self.compute_type}")
+
         if self.hf_token is None:
             logger.warning(
-                "¡ADVERTENCIA! No se encontró HUGGING_FACE_TOKEN.\n"
-                "La diarización (paso 3) fallará para todos los archivos.\n"
-                "Asegúrate de tener un .env o variables de entorno."
+                "HUGGING_FACE_TOKEN no está definido. "
+                "La diarización (pyannote) no se podrá cargar."
             )
+
+
+# ---------------------------------------------------------------------
+# Clase principal del pipeline
+# ---------------------------------------------------------------------
+
 
 class WhisperXPipeline:
     """
-    Encapsula el pipeline completo de WhisperX (ASR, Alineación, Diarización).
-
-    Esta clase carga los modelos una sola vez al inicializarse (basado en 
-    PipelineConfig) y los reutiliza para procesar múltiples archivos,
-    optimizando significativamente el rendimiento en lotes.
+    Pipeline completo: ASR + alineación + diarización + guardado.
     """
 
     def __init__(self, config: PipelineConfig):
-        """
-        Inicializa el pipeline y carga todos los modelos necesarios en memoria.
-
-        :param config: Objeto PipelineConfig con todos los parámetros.
-        """
         self.config = config
         self.asr_model = None
         self.align_model = None
         self.align_metadata = None
-        self.diarize_model = None
-        
-        self._setup_dependencies()
+        self.diar_model: Optional[DiarizationPipeline] = None
+
+        self._setup_nltk()
         self._load_models()
 
-    def _setup_dependencies(self):
-        """Configura dependencias externas como NLTK y dotenv."""
+    # ------------------------- SETUP & MODELOS -------------------------
 
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        custom_nltk_path = os.path.join(os.path.dirname(script_dir), "utilities", "nltk_data")
-        
+    def _setup_nltk(self) -> None:
+        """Configura la ruta de NLTK local (utilities/nltk_data)."""
+        custom_nltk_path = os.path.join(
+            PROJECT_ROOT, "audio_transcription", "utilities", "nltk_data"
+        )
         if os.path.exists(custom_nltk_path):
-            logger.info(f"Añadiendo ruta de NLTK personalizada: {custom_nltk_path}")
             nltk.data.path.append(custom_nltk_path)
+            logger.info(f"NLTK path añadido: {custom_nltk_path}")
         else:
-            logger.warning(f"No se encontró la ruta de NLTK: {custom_nltk_path}. Se usará la ruta por defecto.")
+            logger.warning(
+                f"No se encontró NLTK en {custom_nltk_path}. "
+                "Se usarán rutas por defecto."
+            )
 
-    def _load_models(self):
-        """Carga los modelos ASR, Alineación y Diarización en memoria."""
+    def _load_models(self) -> None:
+        """
+        Carga el modelo ASR, el modelo de alineación y (opcionalmente)
+        el modelo de diarización de pyannote.
+        """
         try:
-            logger.info(f"[Paso 1/3] Cargando modelo ASR: {self.config.asr_model_name}...")
+            # 1) ASR (WhisperX / faster-whisper)
+            logger.info(
+                f"[1/3] Cargando ASR WhisperX '{self.config.asr_model}' "
+                f"en {self.config.device_asr} (compute_type={self.config.compute_type})…"
+            )
             self.asr_model = whisperx.load_model(
-                self.config.asr_model_name,
-                self.config.device_asr,
+                self.config.asr_model,
+                device=self.config.device_asr,
                 compute_type=self.config.compute_type,
-                language=self.config.language_code
+                language=self.config.language,
             )
-            
-            logger.info(f"[Paso 2/3] Cargando modelo de alineación para '{self.config.language_code}'...")
+
+            # 2) Alineación
+            logger.info(
+                f"[2/3] Cargando modelo de alineación para '{self.config.language}'…"
+            )
             self.align_model, self.align_metadata = whisperx.load_align_model(
-                language_code=self.config.language_code,
-                device=self.config.device_torch
+                language_code=self.config.language,
+                device=self.config.device_torch,
             )
-            
+
+            # 3) Diarización (si tenemos token)
             if self.config.hf_token:
-                logger.info("[Paso 3/3] Cargando modelo de diarización (pyannote)...")
-                self.diarize_model = DiarizationPipeline(
-                    use_auth_token=self.config.hf_token,
-                    device=self.config.device_torch
-                )
+                try:
+                    logger.info(
+                        "[3/3] Cargando modelo de diarización pyannote "
+                        "(forzado a CPU para evitar problemas de cuDNN)…"
+                    )
+                    # Forzamos CPU explícitamente: así evitamos libcudnn_ops_infer.so.8
+                    self.diar_model = DiarizationPipeline(
+                        use_auth_token=self.config.hf_token,
+                        device="cpu",
+                    )
+                    logger.info("Diarización cargada correctamente en CPU.")
+                except Exception as e:
+                    self.diar_model = None
+                    logger.error(
+                        f"No se pudo cargar pyannote diarization. "
+                        f"Se omite diarización. Error: {e}"
+                    )
             else:
-                logger.warning("Saltando carga del modelo de diarización (no se proveyó token de HF).")
-            
-            logger.info("Todos los modelos han sido cargados exitosamente.")
-            
+                logger.warning(
+                    "No se cargará diarización (no hay HUGGING_FACE_TOKEN)."
+                )
+
+            logger.info("✔ Todos los modelos cargados correctamente.")
         except Exception as e:
             logger.critical(f"Error fatal cargando modelos: {e}")
             raise
 
-    def _log_resource_usage(self):
-        """Registra el uso actual de CPU y memoria RAM."""
-        logger.info(f"Uso de CPU: {psutil.cpu_percent(interval=None)}% | Uso de Memoria: {psutil.virtual_memory().percent}%")
+    # ------------------------- UTILIDADES -------------------------
 
-    def _process_file(self, audio_path: str, output_dir: str):
+    @staticmethod
+    def _log_resource_usage() -> None:
+        cpu = psutil.cpu_percent(interval=None)
+        mem = psutil.virtual_memory().percent
+        logger.info(f"CPU={cpu:.1f}% | RAM={mem:.1f}%")
+
+    def _discover_files(self, input_path: str) -> List[str]:
         """
-        Ejecuta el pipeline completo para un solo archivo de audio.
-        Asume que todos los modelos ya están cargados en memoria.
+        Lista archivos de audio/vídeo válidos desde un archivo o un directorio.
+        """
+        VALID_EXT = (".wav", ".mp3", ".mp4", ".m4a", ".flac", ".aac", ".ogg", ".wma")
+        files: List[str] = []
 
-        :param audio_path: Ruta al archivo de audio a procesar.
-        :param output_dir: Directorio base donde se guardarán los resultados.
+        if not os.path.exists(input_path):
+            logger.error(f"La ruta de entrada no existe: {input_path}")
+            return files
+
+        if os.path.isfile(input_path):
+            if input_path.lower().endswith(VALID_EXT):
+                files.append(input_path)
+                logger.info("Procesando un único archivo.")
+            else:
+                logger.error(f"El archivo no es un formato válido: {input_path}")
+        else:
+            logger.info(f"Escaneando directorio: {input_path}")
+            for root, _, fnames in os.walk(input_path):
+                for fn in fnames:
+                    if fn.lower().endswith(VALID_EXT):
+                        files.append(os.path.join(root, fn))
+            logger.info(f"Se encontraron {len(files)} archivos de audio/vídeo.")
+
+        return files
+
+    # ------------------------- PROCESAMIENTO -------------------------
+
+    def _save_results(
+        self, result: Dict[str, Any], audio_path: str, output_dir: str
+    ) -> None:
+        """
+        Guarda JSON completo y TXT simple (un speaker por línea).
+        """
+        base = os.path.splitext(os.path.basename(audio_path))[0]
+
+        json_out = os.path.join(output_dir, base + "_completo.json")
+        txt_out = os.path.join(output_dir, base + "_simple.txt")
+
+        os.makedirs(output_dir, exist_ok=True)
+
+        logger.info(f"Guardando JSON en: {json_out}")
+        try:
+            with open(json_out, "w", encoding="utf-8") as f:
+                json.dump(result, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Error guardando JSON: {e}")
+
+        logger.info(f"Guardando TXT en: {txt_out}")
+        try:
+            with open(txt_out, "w", encoding="utf-8") as f:
+                segments = result.get("segments", [])
+                if not segments:
+                    f.write("No se encontraron segmentos.\n")
+                else:
+                    for seg in segments:
+                        speaker = seg.get("speaker", "HABLANTE_DESCONOCIDO")
+                        text = seg.get("text", "").strip()
+                        f.write(f"[{speaker}]: {text}\n")
+        except Exception as e:
+            logger.error(f"Error guardando TXT: {e}")
+
+    def _process_file(self, audio_path: str, output_dir: str) -> None:
+        """
+        Ejecuta ASR + alineación + (opcional) diarización sobre un archivo.
         """
         try:
-            logger.info("Cargando audio...")
+            logger.info(f"Cargando audio: {audio_path}")
             audio = whisperx.load_audio(audio_path)
             self._log_resource_usage()
 
-            # --- Transcripción (ASR) ---
-            logger.info("Transcribiendo audio (ASR)...")
-            result = self.asr_model.transcribe(audio, batch_size=self.config.batch_size)
+            # 1) ASR
+            logger.info("Transcribiendo (ASR)…")
+            result = self.asr_model.transcribe(
+                audio,
+                batch_size=self.config.batch_size,
+            )
             self._log_resource_usage()
             logger.info("Transcripción completada.")
 
-            # --- Alineación ---
-            logger.info("Alineando transcripción (Alignment)...")
+            # 2) Alineación
+            logger.info("Alineando transcripción…")
             result = whisperx.align(
                 result["segments"],
                 self.align_model,
                 self.align_metadata,
                 audio,
                 self.config.device_torch,
-                return_char_alignments=False
+                return_char_alignments=False,
             )
             self._log_resource_usage()
             logger.info("Alineación completada.")
 
-            # --- Diarización ---
-            if self.diarize_model:
+            # 3) Diarización
+            if self.diar_model is not None:
                 try:
-                    logger.info("Ejecutando diarización de hablantes...")
-                    diarize_segments = self.diarize_model(audio)
+                    logger.info("Ejecutando diarización (pyannote, CPU)…")
+                    diar_segments = self.diar_model(audio)
                     self._log_resource_usage()
-                    logger.info("Asignando hablantes a las palabras...")
-                    result = assign_word_speakers(diarize_segments, result)
+                    logger.info("Asignando hablantes a palabras/segmentos…")
+                    result = assign_word_speakers(diar_segments, result)
                     logger.info("Diarización completada.")
                 except Exception as e:
-                    logger.error(f"Error durante la diarización en {audio_path}: {e}")
-                    logger.warning("El resultado final NO incluirá hablantes.")
+                    logger.error(
+                        f"Error en diarización para {audio_path}: {e}. "
+                        "Se continúa sin hablantes."
+                    )
             else:
-                logger.warning("Saltando diarización (modelo no cargado).")
+                logger.info("Diarización desactivada (sin modelo).")
 
-            # --- Guardar Resultados ---
+            # 4) Guardar
             self._save_results(result, audio_path, output_dir)
 
         except Exception as e:
-            logger.error(f"Error fatal procesando el archivo {audio_path}: {e}")
-            
-    def _save_results(self, result: Dict[str, Any], audio_path: str, output_dir: str):
+            logger.error(f"Error procesando {audio_path}: {e}")
+
+    def transcribe_batch(self, input_path: str, output_dir: str) -> None:
         """
-        Guarda los resultados del pipeline en archivos JSON y TXT.
-
-        :param result: El diccionario de resultados del pipeline.
-        :param audio_path: Ruta original del audio (para generar el nombre).
-        :param output_dir: Directorio donde se guardarán los archivos.
+        Orquesta el procesamiento de un archivo o un lote de archivos.
         """
-        logger.info("--- Proceso completado. Guardando resultados... ---")
-        base_filename = os.path.splitext(os.path.basename(audio_path))[0]
-
-        json_output_path = os.path.join(output_dir, base_filename + "_completo.json")
-        logger.info(f"Guardando resultado JSON completo en: {json_output_path}")
-        try:
-            with open(json_output_path, 'w', encoding='utf-8') as f:
-                json.dump(result, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            logger.error(f"Error al guardar el JSON: {e}")
-
-        txt_output_path = os.path.join(output_dir, base_filename + "_simple.txt")
-        logger.info(f"Guardando transcripción TXT simple en: {txt_output_path}")
-        try:
-            with open(txt_output_path, 'w', encoding='utf-8') as f:
-                if "segments" in result:
-                    for segment in result["segments"]:
-                        speaker = segment.get("speaker", "HABLANTE_DESCONOCIDO")
-                        text = segment["text"].strip()
-                        f.write(f"[{speaker}]: {text}\n")
-                else:
-                    f.write("No se encontraron segmentos en la transcripción.")
-        except Exception as e:
-            logger.error(f"Error al guardar el TXT: {e}")
-
-    def transcribe_batch(self, input_path: str, output_dir: str):
-        """
-        Descubre y procesa un lote de archivos de audio desde una ruta de entrada.
-
-        La ruta puede ser un solo archivo o un directorio.
-
-        :param input_path: Ruta a un archivo de audio o un directorio de audios.
-        :param output_dir: Directorio base donde se guardarán todos los resultados.
-        """
-        files_to_process = self._discover_files(input_path)
-        if not files_to_process:
+        files = self._discover_files(input_path)
+        if not files:
             logger.info("No hay archivos para procesar. Saliendo.")
             return
 
-        logger.info("--- Iniciando pipeline de WhisperX ---")
-        logger.info(f"Configuración: Modelo={self.config.asr_model_name}, "
-                    f"ASR={self.config.device_asr}, Torch={self.config.device_torch}, "
-                    f"Compute={self.config.compute_type}, Batch={self.config.batch_size}")
+        logger.info(f"{len(files)} archivos detectados.")
+        logger.info("Procesando archivos…")
 
-        psutil.cpu_percent(interval=None)  # inicializa psutil
+        for idx, path in enumerate(files, start=1):
+            logger.info(f"--- {idx}/{len(files)} --- {path}")
+            self._process_file(path, output_dir)
 
-        total_files = len(files_to_process)
-        for i, file_path in enumerate(files_to_process, 1):
-            logger.info(f"--- Procesando archivo {i}/{total_files}: {file_path} ---")
-            self._process_file(file_path, output_dir)
-            logger.info(f"--- Finalizado archivo {i}/{total_files}: {file_path} ---")
+        logger.info("✔ Pipeline finalizado.")
 
-        logger.info("¡Script finalizado!")
+    # ------------------------- LIMPIEZA -------------------------
 
-    def _discover_files(self, input_path: str) -> List[str]:
+    def unload_models(self) -> None:
         """
-        Genera una lista de archivos de audio válidos a partir de una ruta.
-
-        :param input_path: Ruta a un archivo o directorio.
-        :return: Lista de rutas de archivos de audio válidos.
+        Libera memoria de los modelos (por si se usa en procesos largos).
         """
-        files_to_process: List[str] = []
-        VALID_EXTENSIONS = ('.wav', '.mp3', '.mp4', '.m4a', '.flac', '.aac', '.ogg', '.wma')
-
-        if not os.path.exists(input_path):
-            logger.error(f"La ruta de entrada no existe: {input_path}")
-            return files_to_process
-
-        if os.path.isfile(input_path):
-            if input_path.lower().endswith(VALID_EXTENSIONS):
-                files_to_process.append(input_path)
-                logger.info("Procesando un solo archivo.")
-            else:
-                logger.error(f"El archivo {input_path} no es un formato de audio/video válido.")
-        elif os.path.isdir(input_path):
-            logger.info(f"Escaneando directorio: {input_path}...")
-            for root, _, files in os.walk(input_path):
-                for file in files:
-                    if file.lower().endswith(VALID_EXTENSIONS):
-                        files_to_process.append(os.path.join(root, file))
-            if not files_to_process:
-                logger.warning(f"No se encontraron archivos de audio/video válidos en {input_path}")
-            else:
-                logger.info(f"Se encontraron {len(files_to_process)} archivos de audio/video.")
-        
-        return files_to_process
-
-    def _unload_models(self):
-        """
-        Descarga todos los modelos de la memoria para liberar recursos.
-        Comprueba si el atributo existe antes de intentar eliminarlo.
-        """
-        logger.info("Descargando modelos de la memoria...")
-        
-        if hasattr(self, 'asr_model'):
-            del self.asr_model
-            
-        if hasattr(self, 'align_model'):
-            del self.align_model
-            
-        if hasattr(self, 'align_metadata'):
-            del self.align_metadata
-            
-        if hasattr(self, 'diarize_model'):
-            del self.diarize_model
-            
+        logger.info("Descargando modelos de la memoria…")
+        for attr in ["asr_model", "align_model", "align_metadata", "diar_model"]:
+            if hasattr(self, attr):
+                delattr(self, attr)
         gc.collect()
-        if self.config.device_torch == "mps":
-            torch.mps.empty_cache()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         logger.info("Memoria liberada.")
