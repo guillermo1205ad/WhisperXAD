@@ -23,18 +23,5 @@ desktop.ini
 *.swp
 *.swo
 
-# directorios ya archivos generales
-*.egg-info/
-.env
-
-audio_transcription/inputs/audios/*
-!audio_transcription/inputs/audios/.gitkeep
-
-audio_transcription/outputs/*
-!audio_transcription/outputs/.gitkeep
-
-audio_transcription/logs/*
-!audio_transcription/logs/.gitkeep
-
 # No versionar audios de entrada de WhisperX
 audio_transcription/inputs/audios/
