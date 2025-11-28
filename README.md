@@ -285,5 +285,5 @@ La combinación de `uv` + `pyproject.toml` + `uv.lock` garantiza reproducibilida
 ## Autores / Mantenedores
 
 - Autor original del repositorio: Camilo Gutiérrez (GitHub: @cygnusbarrett)
-- Refactor del pipeline WhisperX, integración GPU/diarización y documentación extendida:
+- Refactor del pipeline WhisperX, integración GPU en todas las etapas y documentación extendida:
   Guillermo Peralta (GitHub: @guillermo1205ad)
