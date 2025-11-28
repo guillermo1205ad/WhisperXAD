@@ -1,7 +1,45 @@
-# Python
+# =========================
+# Python / Entorno
+# =========================
+
+# Entornos virtuales
+.venv/
 venv/
 env/
+env.bak/
+python_env/
+venv.bak/
+
+# Bytecode de Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Cachés de testing / tools
+.pytest_cache/
+.mypy_cache/
+.cache/
+.ipynb_checkpoints/
+
+# Distribución / builds (por si algún día se empaqueta)
+build/
+dist/
 *.egg-info/
+
+
+# =========================
+# Archivos de configuración sensibles
+# =========================
+
+# Variables de entorno (NO subir tokens)
+.env
+.env.*
+*.env
+
+
+# =========================
+# Sistema Operativo
+# =========================
 
 # Windows
 Thumbs.db
@@ -13,11 +51,57 @@ desktop.ini
 .AppleDouble
 .LSOverride
 
-# Editores y IDEs (VSCode, JetBrains, Vim)
+
+# =========================
+# Editores e IDEs
+# =========================
+
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# No versionar audios de entrada de WhisperX
+
+# =========================
+# Logs y archivos temporales
+# =========================
+
+# Logs generales
+*.log
+logs/
+
+# Logs específicos de audio_transcription
+audio_transcription/logs/
+
+# Temporales genéricos
+*.tmp
+*.bak
+*.orig
+
+
+# =========================
+# Datos de WhisperX (entradas/salidas)
+# =========================
+
+# No versionar audios de entrada del pipeline
 audio_transcription/inputs/audios/
+
+# (Opcional) Si no quieres versionar ninguna salida generada:
+# Descomenta la siguiente línea si prefieres mantener outputs solo locales
+# audio_transcription/outputs/
+
+# O solo las transcripciones (si quieres guardar otros tipos de outputs)
+# audio_transcription/outputs/transcripciones/
+
+
+# =========================
+# Otros
+# =========================
+
+# Archivos grandes de trabajo o notas locales
+*.tar
+*.zip
+*.7z
+
+# Archivos de texto auxiliares que no quieras versionar
+# estructura_proyecto.txt
