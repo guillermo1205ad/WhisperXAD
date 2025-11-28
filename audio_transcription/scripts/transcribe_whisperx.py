@@ -98,7 +98,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         choices=[None, "int8", "int8_float16", "float16", "float32"],
         help=(
             "Tipo de precisión para ASR (faster-whisper). Si se deja vacío, "
-            "el pipeline decide automáticamente (float16 en GPU, int8 en CPU)."
+            "el pipeline decide automáticamente (float32 en GPU, int8 en CPU)."
         ),
     )
 
@@ -129,9 +129,6 @@ def main() -> None:
     os.makedirs(args.output_dir, exist_ok=True)
 
     # --- Construir configuración del pipeline ---
-    # OJO: aquí usamos exactamente los nombres de campos de PipelineConfig:
-    #   language -> language
-    #   asr_model -> asr_model
     config_kwargs = {
         "language": args.language,
         "asr_model": args.asr_model,

@@ -1,24 +1,35 @@
 [project]
 name = "nuestramemoria-dev"
 version = "0.1.0"
-description = "Desarrollos para procesamiento multimodal de datos en el proyecto NuestraMemorIA" 
-requires-python = ">=3.10"
+description = "Desarrollos para procesamiento multimodal de datos en el proyecto NuestraMemorIA"
+# IMPORTANTE: limitar versión de Python para evitar el split conflictivo de torch
+requires-python = ">=3.10,<3.13"
 
 dependencies = [
-    "ctranslate2",
-    "faster-whisper",
-    "librosa",
-    "numpy",
-    "psutil",
-    "pyannote.audio",
+    # WhisperX (ASR + alineación + diarización). Desde GitHub.
+    # Si más adelante quieres máxima replicabilidad, puedes fijar un commit:
+    # "whisperx @ git+https://github.com/m-bain/whisperx.git@<commit_hash>"
+    "whisperx @ git+https://github.com/m-bain/whisperx.git",
+
+    # Diarización moderna (pyannote 3.x)
+    "pyannote.audio>=3.1,<4.0",
+
+    # Backend Whisper y utilidades de audio
+    "ctranslate2>=4.4.0",
+    "faster-whisper>=1.0.0",
+    "librosa>=0.10.1",
+    "numpy>=1.24",
+
+    # Utilidades
+    "psutil>=5.9",
     "python-dotenv>=1.2.1",
-    "whisperx",
+    "nltk>=3.8",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "ruff",     # linting y formateo
-    "pytest",   # correr tests
+    "ruff",
+    "pytest",
 ]
 
 [build-system]

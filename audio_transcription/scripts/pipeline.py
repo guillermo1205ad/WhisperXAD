@@ -14,8 +14,21 @@ from whisperx.diarize import DiarizationPipeline, assign_word_speakers
 
 logger = logging.getLogger(__name__)
 
+if torch.cuda.is_available():
+    try:
+        torch.backends.cudnn.enabled = False
+        torch.backends.cudnn.benchmark = False
+        # Opcional: hacer la ejecución determinista
+        torch.backends.cudnn.deterministic = True
+        logger.info(
+            "cuDNN desactivado explícitamente. "
+            "El cómputo seguirá en GPU, pero sin usar librerías cuDNN."
+        )
+    except Exception as e:
+        logger.warning(f"No se pudo desactivar cuDNN limpiamente: {e}")
+
 # ---------------------------------------------------------------------
-# Carga de .env desde la raíz del proyecto
+# Cargar de .env desde la raíz del proyecto
 # ---------------------------------------------------------------------
 THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(os.path.dirname(THIS_DIR))
@@ -40,51 +53,76 @@ else:
 class PipelineConfig:
     """
     Configuración para el WhisperXPipeline.
+
+    Objetivo: TODO lo que se pueda en GPU:
+
+      - ASR: siempre en cuda si hay GPU
+      - Alineación: siempre en cuda si hay GPU
+      - Diarización: siempre en cuda si hay GPU
+
+    Si no hay GPU, todo se cae a CPU de forma ordenada.
     """
 
     language: str = "es"
     asr_model: str = "large-v3"
     batch_size: int = 16
-    compute_type: Optional[str] = None  # int8, float16, float32, etc.
 
-    device_asr: Optional[str] = None    # "cuda" o "cpu"
-    device_torch: Optional[str] = None  # para alineación
+    # compute_type: float32 en GPU, int8 en CPU (se ajusta en __post_init__)
+    compute_type: Optional[str] = None
 
+    # Dispositivos
+    device_asr: Optional[str] = None      # "cuda" o "cpu"
+    device_align: Optional[str] = None    # "cuda" o "cpu"
+    device_diar: Optional[str] = None     # "cuda" o "cpu"
+
+    # Token HF para diarización pyannote 3.x
     hf_token: Optional[str] = field(
         default_factory=lambda: os.environ.get("HUGGING_FACE_TOKEN")
     )
 
     def __post_init__(self):
-        # Detectar dispositivos
-        if self.device_asr is None or self.device_torch is None:
-            if torch.cuda.is_available():
-                # Podemos usar GPU para ASR y alignment
-                self.device_asr = "cuda"
-                self.device_torch = "cuda"
-                logger.info(
-                    "CUDA detectado. ASR y Alignment usarán GPU. "
-                    "La diarización se forzará a CPU para evitar problemas con cuDNN."
-                )
-            else:
-                self.device_asr = "cpu"
-                self.device_torch = "cpu"
-                logger.warning(
-                    "CUDA no disponible. Todo el pipeline se ejecutará en CPU "
-                    "(más lento, pero estable)."
-                )
+        # -----------------------------------------------------------------
+        # Detección de GPU
+        # -----------------------------------------------------------------
+        if torch.cuda.is_available():
+            # ASR y alineación en GPU siempre
+            self.device_asr = self.device_asr or "cuda"
+            self.device_align = self.device_align or "cuda"
+            # Diarización en GPU
+            self.device_diar = self.device_diar or "cuda"
 
-        # Si no hay compute_type, elegimos uno razonable por defecto
+            logger.info(
+                "CUDA detectado. ASR, Alineación y Diarización usarán GPU (cuda), "
+                "con cuDNN DESACTIVADO."
+            )
+        else:
+            self.device_asr = self.device_asr or "cpu"
+            self.device_align = self.device_align or "cpu"
+            self.device_diar = self.device_diar or "cpu"
+            logger.warning(
+                "CUDA NO disponible. Todo el pipeline se ejecutará en CPU "
+                "(más lento)."
+            )
+
+        # -----------------------------------------------------------------
+        # compute_type por defecto
+        # -----------------------------------------------------------------
         if self.compute_type is None:
             if self.device_asr == "cuda":
-                self.compute_type = "float16"
+                # En GPU usamos float32 para aprovechar VRAM
+                self.compute_type = "float32"
             else:
+                # En CPU, int8 más eficiente
                 self.compute_type = "int8"
             logger.info(f"compute_type no especificado. Usando: {self.compute_type}")
 
+        # -----------------------------------------------------------------
+        # Token HF
+        # -----------------------------------------------------------------
         if self.hf_token is None:
             logger.warning(
                 "HUGGING_FACE_TOKEN no está definido. "
-                "La diarización (pyannote) no se podrá cargar."
+                "La diarización (pyannote) NO se podrá cargar."
             )
 
 
@@ -96,6 +134,9 @@ class PipelineConfig:
 class WhisperXPipeline:
     """
     Pipeline completo: ASR + alineación + diarización + guardado.
+
+    - ASR + alineación: WhisperX, en GPU si está disponible.
+    - Diarización: pyannote 3.x (pyannote/speaker-diarization-3.1), en GPU si existe.
     """
 
     def __init__(self, config: PipelineConfig):
@@ -126,8 +167,9 @@ class WhisperXPipeline:
 
     def _load_models(self) -> None:
         """
-        Carga el modelo ASR, el modelo de alineación y (opcionalmente)
-        el modelo de diarización de pyannote.
+        Carga el modelo ASR, el modelo de alineación y el modelo de diarización.
+        ASR + align → GPU cuando existe.
+        Diarización → GPU cuando existe.
         """
         try:
             # 1) ASR (WhisperX / faster-whisper)
@@ -144,41 +186,55 @@ class WhisperXPipeline:
 
             # 2) Alineación
             logger.info(
-                f"[2/3] Cargando modelo de alineación para '{self.config.language}'…"
+                f"[2/3] Cargando modelo de alineación para '{self.config.language}' "
+                f"en {self.config.device_align}…"
             )
             self.align_model, self.align_metadata = whisperx.load_align_model(
                 language_code=self.config.language,
-                device=self.config.device_torch,
+                device=self.config.device_align,
             )
 
-            # 3) Diarización (si tenemos token)
-            if self.config.hf_token:
-                try:
-                    logger.info(
-                        "[3/3] Cargando modelo de diarización pyannote "
-                        "(forzado a CPU para evitar problemas de cuDNN)…"
-                    )
-                    # Forzamos CPU explícitamente: así evitamos libcudnn_ops_infer.so.8
-                    self.diar_model = DiarizationPipeline(
-                        use_auth_token=self.config.hf_token,
-                        device="cpu",
-                    )
-                    logger.info("Diarización cargada correctamente en CPU.")
-                except Exception as e:
-                    self.diar_model = None
-                    logger.error(
-                        f"No se pudo cargar pyannote diarization. "
-                        f"Se omite diarización. Error: {e}"
-                    )
-            else:
-                logger.warning(
-                    "No se cargará diarización (no hay HUGGING_FACE_TOKEN)."
-                )
+            # 3) Diarización (pyannote 3.x) vía WhisperX.DiarizationPipeline
+            self._load_diarization_model()
 
             logger.info("✔ Todos los modelos cargados correctamente.")
         except Exception as e:
             logger.critical(f"Error fatal cargando modelos: {e}")
             raise
+
+    def _load_diarization_model(self) -> None:
+        """
+        Carga el modelo de diarización usando pyannote/speaker-diarization-3.1.
+
+        - Requiere HUGGING_FACE_TOKEN válido y aceptación de términos en HF.
+        - Usa siempre el dispositivo indicado en config.device_diar.
+        """
+
+        if not self.config.hf_token:
+            logger.warning(
+                "No se cargará diarización: falta HUGGING_FACE_TOKEN en el entorno."
+            )
+            return
+
+        device = self.config.device_diar or ("cuda" if torch.cuda.is_available() else "cpu")
+
+        try:
+            logger.info(
+                f"[3/3] Cargando diarización pyannote "
+                f"'pyannote/speaker-diarization-3.1' en {device}…"
+            )
+            self.diar_model = DiarizationPipeline(
+                model_name="pyannote/speaker-diarization-3.1",
+                use_auth_token=self.config.hf_token,
+                device=device,
+            )
+            logger.info(f"Diarización cargada correctamente en {device}.")
+        except Exception as e:
+            self.diar_model = None
+            logger.error(
+                "No se pudo cargar diarización. "
+                f"Se ejecutará el pipeline SIN diarización. Error: {e}"
+            )
 
     # ------------------------- UTILIDADES -------------------------
 
@@ -215,7 +271,7 @@ class WhisperXPipeline:
 
         return files
 
-    # ------------------------- PROCESAMIENTO -------------------------
+    # ------------------------- GUARDADO -------------------------
 
     def _save_results(
         self, result: Dict[str, Any], audio_path: str, output_dir: str
@@ -251,6 +307,8 @@ class WhisperXPipeline:
         except Exception as e:
             logger.error(f"Error guardando TXT: {e}")
 
+    # ------------------------- PROCESAMIENTO -------------------------
+
     def _process_file(self, audio_path: str, output_dir: str) -> None:
         """
         Ejecuta ASR + alineación + (opcional) diarización sobre un archivo.
@@ -276,16 +334,19 @@ class WhisperXPipeline:
                 self.align_model,
                 self.align_metadata,
                 audio,
-                self.config.device_torch,
+                self.config.device_align,
                 return_char_alignments=False,
             )
             self._log_resource_usage()
             logger.info("Alineación completada.")
 
-            # 3) Diarización
+            # 3) Diarización (si está disponible)
             if self.diar_model is not None:
                 try:
-                    logger.info("Ejecutando diarización (pyannote, CPU)…")
+                    logger.info(
+                        "Ejecutando diarización (pyannote "
+                        "pyannote/speaker-diarization-3.1)…"
+                    )
                     diar_segments = self.diar_model(audio)
                     self._log_resource_usage()
                     logger.info("Asignando hablantes a palabras/segmentos…")
@@ -297,7 +358,7 @@ class WhisperXPipeline:
                         "Se continúa sin hablantes."
                     )
             else:
-                logger.info("Diarización desactivada (sin modelo).")
+                logger.info("Diarización desactivada (sin modelo cargado).")
 
             # 4) Guardar
             self._save_results(result, audio_path, output_dir)
