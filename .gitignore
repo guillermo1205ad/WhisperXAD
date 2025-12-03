@@ -104,4 +104,7 @@ audio_transcription/inputs/audios/
 *.7z
 
 # Archivos de texto auxiliares que no quieras versionar
-# estructura_proyecto.txt
+# estructura_proyecto.txt__pycache__/
+*.pyc
+audio_transcription/outputs/
+.venv/

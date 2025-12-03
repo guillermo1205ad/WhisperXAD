@@ -10,20 +10,20 @@ dependencies = [
     # Si más adelante quieres máxima replicabilidad, puedes fijar un commit:
     # "whisperx @ git+https://github.com/m-bain/whisperx.git@<commit_hash>"
     "whisperx @ git+https://github.com/m-bain/whisperx.git",
-
     # Diarización moderna (pyannote 3.x)
     "pyannote.audio>=3.1,<4.0",
-
     # Backend Whisper y utilidades de audio
     "ctranslate2>=4.4.0",
     "faster-whisper>=1.0.0",
     "librosa>=0.10.1",
     "numpy>=1.24",
-
     # Utilidades
     "psutil>=5.9",
     "python-dotenv>=1.2.1",
     "nltk>=3.8",
+    "static-ffmpeg>=2.13",
+    "nvidia-cudnn-cu12>=9.10.2.21",
+    "nvidia-cublas-cu12>=12.8.4.1",
 ]
 
 [project.optional-dependencies]

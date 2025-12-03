@@ -5,6 +5,13 @@ import logging
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
 
+try:
+    import static_ffmpeg
+    static_ffmpeg.add_paths()
+    print("static-ffmpeg cargado exitosamente.")
+except ImportError:
+    print("static-ffmpeg no está instalado. Usando ffmpeg del sistema.")
+
 import torch
 import psutil
 import nltk
