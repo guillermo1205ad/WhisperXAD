@@ -26,6 +26,7 @@ import nltk
 
 import whisper 
 import whisperx
+from whisperx.diarize import DiarizationPipeline, assign_word_speakers
 
 
 def setup_local_nltk():
@@ -150,19 +151,23 @@ class Pipeline:
 
         self.logger.info(f"👥 [3/3] Diarización (Pyannote 3.1)...")
         try:
-            diarize_model = whisperx.DiarizationPipeline(
+            diarize_model = DiarizationPipeline(
                 use_auth_token=self.hf_token,
                 device=self.device
             )
             
             diarize_segments = diarize_model(audio)
-            final_result = whisperx.assign_word_speakers(diarize_segments, aligned_result)
+            
+            # CAMBIO: Usamos la función importada directamente
+            final_result = assign_word_speakers(diarize_segments, aligned_result)
             
             del diarize_model
             self._clear_vram()
             return final_result
         except Exception as e:
             self.logger.error(f"❌ Error en diarización: {e}")
+            # Importante: Si falla la diarización, devolvemos el resultado alineado
+            # para no perder la transcripción que ya costó tiempo computar.
             return aligned_result
 
     # --- GUARDADO ---
