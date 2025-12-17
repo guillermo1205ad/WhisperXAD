@@ -17,16 +17,13 @@ OUTPUT_DIR="$PROJECT_ROOT/audio_transcription/outputs/dataset_hifi"
 # CARGAR .ENV
 # --------------------------------------------------------
 if [ -f "$ENV_FILE" ]; then
+    sed -i 's/\r$//' "$ENV_FILE"
+    
     set -a
     source "$ENV_FILE"
     set +a
 else
-    echo "❌ Error: No existe $ENV_FILE"
-    exit 1
-fi
-
-if [ -z "$DROPBOX_URL" ]; then
-    echo "❌ Error: DROPBOX_URL vacío."
+    echo "❌ Error: No se encontró .env en $ENV_FILE"
     exit 1
 fi
 
