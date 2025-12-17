@@ -76,11 +76,11 @@ def setup_hardware_precision():
 class Pipeline:
     def __init__(self, args):
         self.args = args
-        self.device = f"cuda:{args.gpu_index}" if torch.cuda.is_available() else "cpu"
         self.logger = logging.getLogger("HiFi-Pipeline")
         
         # Aislar la GPU para este proceso
         os.environ["CUDA_VISIBLE_DEVICES"] = str(args.gpu_index)
+        self.device = "cuda:0" if torch.cuda.is_available() else "cpu"
         
         self.logger.info(f"🧠 Pipeline iniciado en {self.device} (FP32 Force)")
         
