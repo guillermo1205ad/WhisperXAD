@@ -1,7 +1,7 @@
 # --- 1. CONFIGURACIÓN DE USUARIO ---
 
 # ID de la GPU a usar. Déjalo vacío "" para detección automática.
-MANUAL_GPU_IDX="0"
+MANUAL_GPU_IDX="3"
 
 INPUT_SUBDIR="inputs/dropbox_staging"
 OUTPUT_SUBDIR="outputs/dataset_hifi"
@@ -23,14 +23,13 @@ OUTPUT_DIR="$PROJECT_ROOT/$OUTPUT_SUBDIR"
 
 # 3. Cargar variables del .env
 if [ -f "$ENV_FILE" ]; then
-    export $(grep -v '^#' "$ENV_FILE" | xargs)
+    sed -i 's/\r$//' "$ENV_FILE"
+    
+    set -a
+    source "$ENV_FILE"
+    set +a
 else
     echo "❌ Error: No se encontró .env en $ENV_FILE"
-    exit 1
-fi
-
-if [ -z "$DROPBOX_URL" ]; then
-    echo "❌ Error: DROPBOX_URL no definido en .env"
     exit 1
 fi
 
