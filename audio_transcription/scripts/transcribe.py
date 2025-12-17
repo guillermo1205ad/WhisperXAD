@@ -208,7 +208,7 @@ class Pipeline:
         if input_path.is_file():
             files = [input_path]
         else:
-            files = sorted([f for f in input_path.iterdir() if f.suffix.lower() in ['.mp3', '.wav', '.m4a', '.flac']])
+            files = sorted([f for f in input_path.rglob('*') if f.suffix.lower() in ['.mp3', '.wav', '.m4a', '.flac']])
         
         total = len(files)
         self.logger.info(f"📂 Archivos a procesar: {total}")
