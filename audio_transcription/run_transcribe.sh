@@ -43,12 +43,9 @@ else
     rm -f "$ZIP_FILE"
 
     echo "📦 Descargando en: $BASE_INPUT_DIR"
-    
-    DIRECT_LINK="${DROPBOX_URL%=*}" # Cortamos parámetros finales
-    DIRECT_LINK="${DIRECT_LINK}&dl=1" # Forzamos descarga
 
     DIRECT_LINK=$(echo "$DROPBOX_URL" | sed 's/dl=0/dl=1/g')
-
+    
     wget -q --show-progress -O "$ZIP_FILE" "$DIRECT_LINK"
     
     echo "📂 Descomprimiendo..."
