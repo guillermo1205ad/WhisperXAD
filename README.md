@@ -1,11 +1,12 @@
-# NuestroMemorIA – Pipeline de Transcripción de Audio con WhisperX (GPU + Diarización pyannote 3.x)
+# WhisperXAD – Pipeline de Transcripción de Audio con WhisperX (GPU + Diarización)
 
 Este proyecto define un **pipeline de transcripción, alineación y diarización** basado en:
 
 - **WhisperX** (ASR + alineación, usando *faster-whisper* como backend optimizado).
 - **PyTorch 2.4.x** con GPU (CUDA) cuando está disponible.
 - **pyannote.audio 3.x** (diarización moderna, vía `pyannote/speaker-diarization-3.1`).
-- Integración mediante la clase `WhisperXPipeline` en `audio_transcription/scripts/pipeline.py`.
+- Un runner Bash en `audio_transcription/run_transcribe.sh`.
+- Un script principal en `audio_transcription/scripts/transcribe.py`.
 
 Está pensado para ser:
 
@@ -25,8 +26,8 @@ El pipeline procesa archivos de audio (individuales o directorios completos) y g
 
 La lógica está encapsulada en:
 
-- `WhisperXPipeline` — clase principal del pipeline (`audio_transcription/scripts/pipeline.py`).
-- `transcribe_whisperx.py` — script de entrada (CLI) que invoca el pipeline.
+- `audio_transcription/run_transcribe.sh` — runner práctico para procesar los audios del repositorio.
+- `audio_transcription/scripts/transcribe.py` — CLI principal para procesar un archivo o una carpeta completa.
 
 ---
 
@@ -38,13 +39,9 @@ La lógica está encapsulada en:
   - Utiliza el modelo `pyannote/speaker-diarization-3.1`.
   - Intenta correr en **GPU** cuando hay CUDA disponible.
   - Si no se puede (falta de token, problemas de descarga, etc.), el pipeline **continúa sin diarización** en lugar de fallar.
-- **Procesamiento por lotes:** puede recorrer recursivamente un directorio y procesar todos los audios compatibles.
-- **Optimización de recursos:**
-  - Carga los modelos **una sola vez** para procesar múltiples archivos.
-  - Monitoriza uso de **CPU/RAM** con `psutil`.
-  - Desactiva **cuDNN** explícitamente para evitar comportamientos no deterministas o conflictos.
-- **Configuración en código y/o CLI:** se pueden ajustar modelo ASR, idioma, `batch_size`, `compute_type`, etc.
-- **Salidas en JSON y TXT:** un archivo detallado y otro simple por cada audio.
+- **Procesamiento por lotes:** recorre recursivamente un directorio y procesa todos los audios compatibles.
+- **Configuración en CLI:** se pueden ajustar modelo, idioma, GPU y salida.
+- **Salidas en JSON y CSV:** un archivo detallado y otro a nivel de palabra por cada audio.
 - **Replicabilidad:** el entorno está definido en `pyproject.toml` y se instala mediante `uv sync`.
 
 ---
@@ -52,19 +49,18 @@ La lógica está encapsulada en:
 ## 📁 Estructura del proyecto
 
 ```text
-NuestraMemorIA-developments/
+WhisperXAD/
 ├── audio_transcription/
 │   ├── inputs/
-│   │   └── audios/                  # Carpeta donde se colocan los audios de entrada
-│   ├── logs/                        # (Opcional) logs de ejecución
+│   │   └── audios/                  # Carpeta raíz donde el usuario crea o copia sus sets
 │   ├── outputs/
-│   │   └── transcripciones/         # Carpeta destino para los resultados
+│   │   └── transcripciones/         # Salida por defecto del runner Bash
 │   ├── scripts/
-│   │   ├── pipeline.py              # Clase principal WhisperXPipeline
-│   │   └── transcribe_whisperx.py   # Script CLI de entrada
+│   │   └── transcribe.py            # Script CLI principal
+│   ├── run_transcribe.sh            # Runner Bash que procesa inputs/audios/
 │   └── utilities/
 │       └── nltk_data/               # Datos de NLTK (ej. punkt, punkt_tab)
-├── .env                             # Token de Hugging Face (no se versiona)
+├── .env                             # Token de Hugging Face y opcionalmente DROPBOX_URL
 ├── pyproject.toml                   # Definición del proyecto y dependencias
 ├── README.md                        # Este archivo
 └── uv.lock                          # Archivo de bloqueo de dependencias para uv
@@ -80,7 +76,7 @@ Este proyecto utiliza **`uv`** como gestor de paquetes y entorno virtual.
 
 ```bash
 git clone <url-del-repositorio>
-cd NuestraMemorIA-developments
+cd WhisperXAD
 ```
 
 2. **Crea el entorno virtual y sincroniza las dependencias:**
@@ -110,10 +106,16 @@ Esto instala, entre otros:
 La diarización (identificación de hablantes) utiliza modelos de `pyannote.audio` que requieren autenticación.
 
 1. Crea un token de acceso (con permisos de **read**) en tu cuenta de Hugging Face.
-2. Crea un archivo `.env` en la **raíz del repositorio** (`NuestraMemorIA-developments/`) con el contenido:
+2. Crea un archivo `.env` en la **raíz del repositorio** (`WhisperXAD/`) con el contenido:
 
 ```ini
 HUGGING_FACE_TOKEN="hf_TU_TOKEN_AQUI"
+```
+
+Si quieres usar la descarga automática del runner Bash cuando no haya audios locales, agrega también:
+
+```ini
+DROPBOX_URL="https://www.dropbox.com/.../archivo.zip?dl=0"
 ```
 
 3. Acepta los términos de uso de los modelos en Hugging Face (una sola vez por cuenta):
@@ -128,85 +130,140 @@ Si no proporcionas un token válido o no aceptas los términos, **la diarizació
 La alineación necesita los tokenizadores `punkt` y `punkt_tab` de NLTK.
 
 - Estos modelos **ya están incluidos** en el repositorio dentro de `audio_transcription/utilities/nltk_data/`.
-- `WhisperXPipeline` añade automáticamente esta ruta al `nltk.data.path`.
+- El script principal añade automáticamente esta ruta al `nltk.data.path`.
 - No necesitas descargarlos manualmente.
+
+### 3. Carpeta de entrada y organización por sets
+
+La carpeta de entrada que debes crear o poblar dentro del repositorio es:
+
+```text
+WhisperXAD/audio_transcription/inputs/audios/
+```
+
+Esa carpeta es la **raíz de entrada**, no un path fijo para un único set. Dentro de ella puedes:
+
+- Poner archivos de audio sueltos.
+- Crear una carpeta por set, por ejemplo `set_01/`, `set_02/`, `entrevistas_mayo/`.
+- Crear subcarpetas adicionales si necesitas organizar por lote, fecha o fuente.
+
+El script procesa esa ruta de forma **recursiva**, así que detectará audios en cualquier subcarpeta bajo `audio_transcription/inputs/audios/`.
+
+Los formatos soportados por el código actual son:
+
+- `.mp3`
+- `.wav`
+- `.m4a`
+- `.flac`
 
 ---
 
 ## 🚀 Uso (línea de comandos)
 
-Ejecuta el script `transcribe_whisperx.py` desde la **raíz del repositorio** (`NuestraMemorIA-developments/`) usando `uv run`:
+Esta rama tiene dos formas de uso.
+
+### Opción A. Runner Bash del repositorio
+
+Ejecuta desde la raíz del proyecto:
 
 ```bash
-uv run python audio_transcription/scripts/transcribe_whisperx.py [RUTA_ENTRADA] [OPCIONES...]
+bash audio_transcription/run_transcribe.sh
 ```
 
-### Argumento obligatorio
+Qué hace:
 
-- `RUTA_ENTRADA`: Ruta a un **archivo de audio** individual (ej. `audio_transcription/inputs/audios/audio1.wav`) o a un **directorio** que contenga múltiples archivos de audio (ej. `audio_transcription/inputs/audios/`).  
-  El script procesará formatos comunes: `.wav`, `.mp3`, `.mp4`, `.m4a`, `.flac`, `.aac`, `.ogg`, `.wma`.
+- Busca audios dentro de `audio_transcription/inputs/audios/`.
+- Si encuentra audios allí, procesa toda esa carpeta de forma recursiva.
+- Si no encuentra audios y existe `DROPBOX_URL` en `.env`, descarga un ZIP y lo extrae dentro de `audio_transcription/inputs/audios/`.
+- Escribe la salida por defecto en `audio_transcription/outputs/transcripciones/`.
 
-### Argumentos opcionales principales
+### Opción B. Script Python con control explícito
 
-- `-o, --output_dir`: Directorio donde se guardarán los resultados.  
-  - *Default:* `audio_transcription/outputs/transcripciones`
-- `-l, --language`: Código de idioma del audio (ISO 639-1).  
-  - *Default:* `es`
-- `--asr_model`: Modelo ASR de Whisper a utilizar.  
-  - *Default:* `large-v3`  
-  - *Opciones típicas:* `tiny`, `base`, `small`, `medium`, `large`, `large-v2`, `large-v3` (con posibles sufijos `.en` para modelos solo en inglés).
-- `--batch_size`: Número de fragmentos de audio a procesar en paralelo por el ASR. Reduce si tienes poca RAM/VRAM.  
-  - *Default:* `16`
-- `--compute_type`: Precisión numérica para el modelo ASR.
-  - Si **no** se especifica (`None`), el pipeline hace:
-    - GPU (`cuda`): `float32`
-    - CPU: `int8`
-  - Puedes forzar otro valor con este argumento.  
-  - *Opciones típicas:* `int8`, `float16`, `float32`.
+Ejecuta el script `transcribe.py` desde la **raíz del repositorio** usando `uv run`:
 
-> **Nota:** `compute_type="float32"` ofrece la **máxima precisión**, pero consume más VRAM y es más lento. `int8` y `float16` son más ligeros y rápidos, a costa de algo de precisión.
+```bash
+uv run python audio_transcription/scripts/transcribe.py --input_path [RUTA_ENTRADA] --output_dir [RUTA_SALIDA] [OPCIONES...]
+```
+
+### Argumentos principales
+
+- `--input_path`: Ruta a un **archivo de audio** individual o a un **directorio** con uno o más sets de audio.
+- `--output_dir`: Directorio donde se guardarán los resultados.
+- `--gpu_index`: GPU visible para el pipeline. El runner Bash usa el valor configurado en el script.
+- `--model_size`: Modelo Whisper. Default: `large-v3`.
+- `--language`: Idioma del audio. Default: `es`.
+- `--no-diarize`: Desactiva diarización si solo quieres transcripción y alineación.
+
+### Formato de entrada recomendado
+
+- Un set de audio puede ser una carpeta completa dentro de `audio_transcription/inputs/audios/`.
+- También puedes agrupar múltiples sets como subcarpetas dentro de esa misma raíz.
+- El pipeline recorrerá subdirectorios automáticamente.
+
+Ejemplo:
+
+```text
+audio_transcription/inputs/audios/
+├── set_01/
+│   ├── entrevista_001.wav
+│   └── entrevista_002.wav
+├── set_02/
+│   ├── audio_a.mp3
+│   └── audio_b.flac
+└── lote_mayo/
+    └── bloque_1/
+        └── testimonio_01.m4a
+```
 
 ---
 
 ## 📌 Ejemplos de uso
 
-### 1. Procesar todos los audios de un directorio (configuración por defecto)
+### 1. Procesar todos los audios de `inputs/audios/` con el runner Bash
 
 ```bash
-uv run python audio_transcription/scripts/transcribe_whisperx.py   audio_transcription/inputs/audios/
+bash audio_transcription/run_transcribe.sh
 ```
 
-- Usará:
-  - `asr_model = "large-v3"`
-  - `language = "es"`
-  - `batch_size = 16`
-  - `compute_type`:
-    - `float32` si hay GPU (CUDA)
-    - `int8` si solo hay CPU
-- Guardará los resultados en: `audio_transcription/outputs/transcripciones/`.
+- Usa `audio_transcription/inputs/audios/` como raíz de entrada.
+- Recorre todos los sets y subcarpetas dentro de esa ruta.
+- Escribe resultados en `audio_transcription/outputs/transcripciones/`.
 
----
-
-### 2. Procesar un solo archivo, especificando salida e idioma inglés
+### 2. Procesar un set específico con salida dedicada
 
 ```bash
-uv run python audio_transcription/scripts/transcribe_whisperx.py   "audio_transcription/inputs/audios/mi_audio_en.mp3"   -o "audio_transcription/outputs/ingles_results"   -l "en"
+uv run python audio_transcription/scripts/transcribe.py \
+  --input_path audio_transcription/inputs/audios/set_01 \
+  --output_dir audio_transcription/outputs/set_01 \
+  --gpu_index 0
 ```
 
-- Cambia el idioma a inglés (`en`).
-- Escribe los resultados del archivo en la carpeta `outputs/ingles_results`.
+- Recomendado cuando quieres separar claramente un set de otro.
+- Evita mezclar resultados de distintos lotes en una sola carpeta.
 
----
-
-### 3. Procesar un directorio con un modelo más pequeño y menor batch size
+### 3. Procesar varios sets de una sola vez
 
 ```bash
-uv run python audio_transcription/scripts/transcribe_whisperx.py   audio_transcription/inputs/audios/   --asr_model "medium"   --batch_size 4   --compute_type "float16"
+uv run python audio_transcription/scripts/transcribe.py \
+  --input_path audio_transcription/inputs/audios \
+  --output_dir audio_transcription/outputs/lote_completo \
+  --gpu_index 0
 ```
 
-- Usa el modelo `medium` (más ligero que `large-v3`).
-- Reduce el `batch_size` para ahorrar memoria.
-- Usa `float16` para un compromiso razonable entre precisión y VRAM.
+- Procesa todos los archivos compatibles encontrados bajo `audio_transcription/inputs/audios/`.
+- Útil si quieres correr todos los sets del repositorio en una sola ejecución.
+
+### 4. Procesar un solo archivo desactivando diarización
+
+```bash
+uv run python audio_transcription/scripts/transcribe.py \
+  --input_path audio_transcription/inputs/audios/set_01/entrevista_001.wav \
+  --output_dir audio_transcription/outputs/prueba_sin_diarizacion \
+  --gpu_index 0 \
+  --no-diarize
+```
+
+- Útil para pruebas rápidas o cuando no quieres depender del token de Hugging Face.
 
 ---
 
@@ -214,9 +271,9 @@ uv run python audio_transcription/scripts/transcribe_whisperx.py   audio_transcr
 
 Por cada archivo de audio procesado (ej. `mi_audio.wav`), se generan dos archivos en el directorio de salida:
 
-### 1. `mi_audio_completo.json`
+### 1. `mi_audio_full.json`
 
-Archivo JSON detallado que contiene la información completa del pipeline, típicamente con campos como:
+Archivo JSON detallado que contiene la información completa del pipeline. Incluye, entre otros:
 
 - `segments`: lista de segmentos (generalmente frases u oraciones), cada uno con:
   - `text`
@@ -225,22 +282,27 @@ Archivo JSON detallado que contiene la información completa del pipeline, típi
   - `words`: lista de palabras alineadas con:
     - `word`
     - `start`, `end`
-    - `score` (confianza de alineación)
+    - `alignment_score` (confianza de alineación)
+    - `probability` (confianza semántica del Whisper original)
     - `speaker` (si aplica)
-- Posibles campos adicionales según la versión de WhisperX.
 
-### 2. `mi_audio_simple.txt`
+### 2. `mi_audio_words.csv`
 
-Archivo de texto plano, pensado para lectura rápida, con el formato:
+CSV a nivel de palabra con estas columnas:
 
 ```text
-[SPEAKER_00]: Texto del primer segmento hablado por el hablante 0.
-[SPEAKER_01]: Texto del segmento hablado por el hablante 1.
-[SPEAKER_00]: Continuación del hablante 0.
-...
+start,end,word,alignment_score,probability,speaker
 ```
 
-- Si la diarización **no** se ejecutó (o falló), se utilizará `[HABLANTE_DESCONOCIDO]` como etiqueta.
+Notas operativas:
+
+- Si ya existe `nombre_base_full.json` en la carpeta de salida, ese audio se considera procesado y se salta.
+- El nombre de salida usa solo el nombre base del archivo. Si dos audios distintos tienen el mismo nombre en carpetas diferentes y comparten carpeta de salida, colisionarán.
+
+### Recomendación para múltiples sets
+
+- Usa una carpeta de salida distinta por set cuando quieras evitar colisiones y mantener los resultados separados.
+- Si vas a procesar todos los sets juntos, asegúrate de que no existan nombres de archivo repetidos.
 
 ---
 
@@ -278,9 +340,9 @@ Este pipeline proporciona una solución completa para:
 - Obtener marcas de tiempo a nivel de palabra.
 - Identificar y etiquetar hablantes mediante pyannote 3.x (cuando sea posible).
 - Procesar archivos individuales o directorios completos en modo batch.
-- Exportar resultados detallados (JSON) y resúmenes legibles (TXT).
+- Exportar resultados detallados (JSON) y salidas tabulares a nivel de palabra (CSV).
 
-La combinación de `uv` + `pyproject.toml` + `uv.lock` garantiza reproducibilidad del entorno, mientras que `WhisperXPipeline` encapsula la lógica para que puedas reutilizarla desde otros scripts o integrarla en aplicaciones mayores (por ejemplo, una API o una interfaz web).
+La combinación de `uv` + `pyproject.toml` + `uv.lock` garantiza reproducibilidad del entorno, mientras que `audio_transcription/scripts/transcribe.py` y `audio_transcription/run_transcribe.sh` proporcionan una base reutilizable para automatizaciones, APIs o interfaces mayores.
 
 ## Autores / Mantenedores
 
